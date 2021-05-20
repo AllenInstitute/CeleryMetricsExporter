@@ -10,7 +10,7 @@ from src.exporter import CeleryMetricsExporter
 @click.option(
     "--port",
     type=int,
-    default=9808,
+    default=9540,
     show_default=True,
     help="The port the exporter will listen on",
 )
