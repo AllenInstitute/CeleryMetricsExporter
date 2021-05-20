@@ -1,0 +1,6 @@
+prometheus-client
+celery==4.4.7
+Flask
+waitress
+click
+uwsgi
