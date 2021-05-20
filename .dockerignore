@@ -1,0 +1,6 @@
+*.db
+*.csv
+*.pkl
+*.ipynb
+*running.conf
+*.git
