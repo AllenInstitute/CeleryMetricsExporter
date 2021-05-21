@@ -15,8 +15,9 @@ from src.exporter import CeleryMetricsExporter
     help="The port the exporter will listen on",
 )
 @click.option(
-    "-p",
+    "-q",
     "--queue-names",
+    multiple=True,
     required=True,
     help="The queues to track",
 )
