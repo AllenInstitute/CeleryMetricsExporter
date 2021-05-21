@@ -1,13 +1,13 @@
 import logging
 import threading
 import time
+from typing import List
 
 import celery
 from celery.utils.objects import FallbackContext
 from prometheus_client import CollectorRegistry, Counter, Gauge
 
 from src.app import create_app
-from typing import List
 
 logging.basicConfig(level=logging.INFO)
 
@@ -58,6 +58,8 @@ class CeleryMetricsExporter:
             registry = self.registry
         )
         self.celery_app = celery.Celery(broker_url=broker_url)
+        self.celery_app.conf.broker_url = broker_url
+        self.celery_app.conf.result_backend = broker_url
         self.connection = self.celery_app.connection_or_acquire()
         if isinstance(self.connection, FallbackContext):
                     self.connection = self.connection.fallback()
@@ -67,8 +69,12 @@ class CeleryMetricsExporter:
 
     def measure_queues_length(self):
         for queue in self.queues:
+            logging.info(queue)
             try:
-                length = self.connection.default_channel.queue_declare(queue=queue, passive=True).message_count
+                client = self.celery_app.connection().channel().client
+                length = client.llen(queue)
+                # length = self.connection.default_channel.queue_declare(queue=queue, passive=True).message_count
+                logging.info(length)
             except Exception as e:
                 logging.warning("Queue Not Found: {}. Setting its value to zero. Error: {}".format(queue, str(e)))
                 length = 0
@@ -80,13 +86,21 @@ class CeleryMetricsExporter:
  
     def run(self):
         handlers = {
-            'queue-length': self.measure_queues_length
+            'celery_queue_length': self.measure_queues_length
         }
+
+        logging.info("running")
+      
         with self.celery_app.connection() as connection:
             app = create_app(connection, self.registry, self.port)
-            
-            recv = self.celery_app.events.Receiver(connection, handlers=handlers)
-            recv.capture(limit=None, timeout=None, wakeup=True)
+           
+            # recv = self.celery_app.events.Receiver(connection, handlers=handlers)
+            # recv.capture(limit=None, timeout=None, wakeup=True)
+            self.collect_queue_data()
 
+    def collect_queue_data(self):
+        while True:
+            logging.info("get data")
+            self.measure_queues_length()
+            time.sleep(10)                
 
-    
