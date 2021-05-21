@@ -1,0 +1,23 @@
+version: '3.2'
+services: 
+    redis-master:
+        image: redis:6.0
+        container_name: redis-master
+        hostname: redis-master
+        command: ["redis-server"]
+        ports:
+          - 6379:6379
+
+    celery-exporter:
+        image: exporter.tag
+        build:
+            context: .
+        ports: 
+            - 9808:9808
+        command: ["--broker-url=redis://redis-master:6379/0", "--port=9808", "--queue-names=celery"]  
+        depends_on: 
+            - redis-master
+        
+volumes:
+    postgres_data:
+    redis:          
