@@ -23,14 +23,22 @@ def create_app(celery, metrics, port):
     app.config["celery"] = celery
     app.register_blueprint(bp)
 
-    # app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {
-    #     '/metrics': make_wsgi_app()
-    # })
+    @app.route("/health")
+    def health():
+        conn = current_app.config["celery"]
+        uri = conn.as_uri()
+
+        try:
+            conn.ensure_connection(max_retries=3)
+        except Exception as e:
+            logging.error("Failed to connect to broker='{}'", uri)
+            return (f"Failed to connect to broker: '{uri}'", 500)
+        return f"Connected to the celery broker {conn.as_uri()}"
 
     Thread(
         target=serve,
         args=(app,),
-        kwargs=dict(host="0.0.0.0", port=port, _quiet=True),
+        kwargs=dict(host="0.0.0.0", port=port, _quiet=False),
         daemon=True,
     ).start()
 
