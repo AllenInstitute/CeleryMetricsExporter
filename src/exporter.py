@@ -67,14 +67,43 @@ class CeleryMetricsExporter:
         self.port = port
         logging.info("starting")
 
+ 
+    def run(self):
+
+        logging.info("running")
+      
+        with self.celery_app.connection() as connection:
+            app = create_app(connection, self.registry, self.port)
+           
+            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length)
+            q.daemon = True
+            q.start()
+
+            handlers = {}
+
+            recv = self.celery_app.events.Receiver(connection, handlers=handlers)
+            recv.capture(limit=None, timeout=None, wakeup=True)
+
+
+class QueueLengthMonitoringThread(threading.Thread):
+    periodicity_seconds = 30
+
+    def __init__(self, app, queue_list, queue_metric):
+        self.queue_metric = queue_metric
+        self.celery_app = app
+        self.queue_list = queue_list
+        self.connection = self.celery_app.connection_or_acquire()
+
+        if isinstance(self.connection, FallbackContext):
+            self.connection = self.connection.fallback()
+
+        super(QueueLengthMonitoringThread, self).__init__()
+
     def measure_queues_length(self):
-        for queue in self.queues:
-            logging.info(queue)
+        for queue in self.queue_list:
             try:
                 client = self.celery_app.connection().channel().client
                 length = client.llen(queue)
-                # length = self.connection.default_channel.queue_declare(queue=queue, passive=True).message_count
-                logging.info(length)
             except Exception as e:
                 logging.warning("Queue Not Found: {}. Setting its value to zero. Error: {}".format(queue, str(e)))
                 length = 0
@@ -82,25 +111,9 @@ class CeleryMetricsExporter:
             self.set_queue_length(queue, length)
 
     def set_queue_length(self, queue, length):
-        self.queue_length.labels(queue).set(length)
- 
-    def run(self):
-        handlers = {
-            'celery_queue_length': self.measure_queues_length
-        }
+        self.queue_metric.labels(queue).set(length)
 
-        logging.info("running")
-      
-        with self.celery_app.connection() as connection:
-            app = create_app(connection, self.registry, self.port)
-           
-            # recv = self.celery_app.events.Receiver(connection, handlers=handlers)
-            # recv.capture(limit=None, timeout=None, wakeup=True)
-            self.collect_queue_data()
-
-    def collect_queue_data(self):
+    def run(self):  # pragma: no cover
         while True:
-            logging.info("get data")
             self.measure_queues_length()
-            time.sleep(10)                
-
+            time.sleep(self.periodicity_seconds)
