@@ -21,6 +21,14 @@ from src.exporter import CeleryMetricsExporter
     required=True,
     help="The queues to track",
 )
+@click.option(
+    "-r",
+    "--refresh",
+    type=int,
+    default=30,
+    show_default=True,
+    help="How often to refresh metrics in seconds",
+)
 
 
 def cli(broker_url: str, port: int, queue_names: List[str]):
@@ -29,8 +37,8 @@ def cli(broker_url: str, port: int, queue_names: List[str]):
     broker_url = params["broker_url"]
     port = params["port"]
     queue_names = params["queue_names"]
-
-    exporter = CeleryMetricsExporter(broker_url, queue_names, port)
+    metrics_refresh = params["refresh"]
+    exporter = CeleryMetricsExporter(broker_url, queue_names, port, metrics_refresh)
     exporter.run()
 
 

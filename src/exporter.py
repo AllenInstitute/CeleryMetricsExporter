@@ -20,7 +20,8 @@ class CeleryMetricsExporter:
 
     def __init__(self, broker_url: str, 
                        queue_names: List[str],
-                       port: int=9808):
+                       port: int=9808,
+                       metrics_refresh: int=30):
         
         self.registry = CollectorRegistry(auto_describe=True)
 
@@ -65,6 +66,7 @@ class CeleryMetricsExporter:
                     self.connection = self.connection.fallback()
         self.queues = queue_names
         self.port = port
+        self.metrics_refresh = metrics_refresh
         logging.info("starting")
 
  
@@ -75,7 +77,7 @@ class CeleryMetricsExporter:
         with self.celery_app.connection() as connection:
             app = create_app(connection, self.registry, self.port)
            
-            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length)
+            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, self.metrics_refresh)
             q.daemon = True
             q.start()
 
@@ -86,12 +88,12 @@ class CeleryMetricsExporter:
 
 
 class QueueLengthMonitoringThread(threading.Thread):
-    periodicity_seconds = 30
 
-    def __init__(self, app, queue_list, queue_metric):
+    def __init__(self, app: celery, queue_list: List[str], queue_metric: str, metrics_refresh: int=30):
         self.queue_metric = queue_metric
         self.celery_app = app
         self.queue_list = queue_list
+        self.metrics_refresh = metrics_refresh
         self.connection = self.celery_app.connection_or_acquire()
 
         if isinstance(self.connection, FallbackContext):
@@ -116,4 +118,4 @@ class QueueLengthMonitoringThread(threading.Thread):
     def run(self):  # pragma: no cover
         while True:
             self.measure_queues_length()
-            time.sleep(self.periodicity_seconds)
+            time.sleep(self.metrics_refresh)
