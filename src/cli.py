@@ -31,7 +31,7 @@ from src.exporter import CeleryMetricsExporter
 )
 
 
-def cli(broker_url: str, port: int, queue_names: List[str]):
+def cli(broker_url: str, port: int, queue_names: List[str], refresh: int):
     ctx = click.get_current_context()
     params = ctx.params
     broker_url = params["broker_url"]

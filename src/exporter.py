@@ -77,7 +77,7 @@ class CeleryMetricsExporter:
         with self.celery_app.connection() as connection:
             app = create_app(connection, self.registry, self.port)
            
-            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, self.metrics_refresh)
+            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, metrics_refresh=self.metrics_refresh)
             q.daemon = True
             q.start()
 
@@ -119,3 +119,4 @@ class QueueLengthMonitoringThread(threading.Thread):
         while True:
             self.measure_queues_length()
             time.sleep(self.metrics_refresh)
+
