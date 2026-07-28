@@ -1,0 +1,37 @@
+[project]
+name = "celerymetricsexporter"
+version = "0.1.0"
+description = "Export celery metrics to prometheus"
+readme = "README.md"
+# Pinned to the Python series currently running in production (the deployed
+# exporter image is python 3.9.x).
+requires-python = "==3.9.*"
+authors = [
+    { name = "Derrick Brittain", email = "derrickb@alleninstitute.org" },
+]
+dependencies = [
+    "prometheus-client",
+    "celery==4.4.7",
+    "flask",
+    "waitress",
+    "click",
+    "redis",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-env",
+]
+
+[tool.uv]
+# This is a deployable service run from source (python cli.py), not a
+# distributable package, so uv installs only the locked dependencies and does
+# not try to build/install the project itself. uv.lock is the source of truth.
+package = false
+
+[tool.pytest.ini_options]
+# The app runs from source (import src.*); make the repo root importable so the
+# tests resolve `src` without installing the project.
+pythonpath = ["."]

@@ -1,6 +1,16 @@
+# Never copy the local virtualenv or caches into the image (they'd clobber the
+# image's uv-built .venv and bloat the build context).
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.git
+.gitignore
+
+# Data / notebook artifacts
 *.db
 *.csv
 *.pkl
 *.ipynb
 *running.conf
-*.git
