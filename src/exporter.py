@@ -5,6 +5,7 @@ import time
 from typing import List
 
 import celery
+import redis as redis_lib
 from celery.utils.objects import FallbackContext
 from prometheus_client import CollectorRegistry, Counter, Gauge
 
@@ -22,7 +23,8 @@ class CeleryMetricsExporter:
     def __init__(self, broker_url: str, 
                        queue_names: List[str],
                        port: int=9808,
-                       metrics_refresh: int=30):
+                       metrics_refresh: int=30,
+                       visibility_timeout: int=21600):
         
         self.registry = CollectorRegistry(auto_describe=True)
 
@@ -74,6 +76,18 @@ class CeleryMetricsExporter:
         self.celery_app = celery.Celery(broker_url=broker_url)
         self.celery_app.conf.broker_url = broker_url
         self.celery_app.conf.result_backend = broker_url
+        # This app runs an event receiver (see run()), which consumes the celeryev queue.
+        # A consuming channel drives kombu's maybe_restore_messages, and that restores ANY
+        # unacknowledged message older than *this connection's* visibility_timeout -- the
+        # unacked index is global to the broker, not per queue. Left at kombu's 3600s
+        # default, a monitoring process silently requeues other workers' long-running
+        # tasks: on 2026-08-25 a deltalake export was redelivered 3,677s after it started,
+        # while still running, and the duplicate failed and took the original down with it.
+        # This must be at least as long as the longest task any worker on this broker runs.
+        self.celery_app.conf.broker_transport_options = {
+            "visibility_timeout": visibility_timeout,
+        }
+        self.broker_url = broker_url
         self.connection = self.celery_app.connection_or_acquire()
         if isinstance(self.connection, FallbackContext):
                     self.connection = self.connection.fallback()
@@ -90,7 +104,7 @@ class CeleryMetricsExporter:
         with self.celery_app.connection() as connection:
             app = create_app(connection, self.registry, self.port)
            
-            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, inflight_metric=self.inflight_tasks, metrics_refresh=self.metrics_refresh)
+            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, inflight_metric=self.inflight_tasks, metrics_refresh=self.metrics_refresh, broker_url=self.broker_url)
             q.daemon = True
             q.start()
 
@@ -102,24 +116,26 @@ class CeleryMetricsExporter:
 
 class QueueLengthMonitoringThread(threading.Thread):
 
-    def __init__(self, app: celery, queue_list: List[str], queue_metric: str, inflight_metric=None, metrics_refresh: int=30):
+    def __init__(self, app: celery, queue_list: List[str], queue_metric: str, inflight_metric=None, metrics_refresh: int=30, broker_url: str=None):
         self.queue_metric = queue_metric
         self.inflight_metric = inflight_metric
         self.celery_app = app
         self.queue_list = queue_list
         self.metrics_refresh = metrics_refresh
-        self.connection = self.celery_app.connection_or_acquire()
-
-        if isinstance(self.connection, FallbackContext):
-            self.connection = self.connection.fallback()
+        # A plain redis client, built once, rather than a kombu Connection/Channel per
+        # scrape. The previous code called celery_app.connection().channel() on every
+        # measurement and never closed either, leaking a redis connection each time. All
+        # this thread needs is LLEN and HGETALL, which the raw client does directly, and
+        # holding no kombu channel keeps this thread incapable of participating in
+        # message restoration at all.
+        self._redis = redis_lib.Redis.from_url(broker_url or app.conf.broker_url)
 
         super(QueueLengthMonitoringThread, self).__init__()
 
     def measure_queues_length(self):
         for queue in self.queue_list:
             try:
-                client = self.celery_app.connection().channel().client
-                length = client.llen(queue)
+                length = self._redis.llen(queue)
             except Exception as e:
                 logging.warning("Queue Not Found: {}. Setting its value to zero. Error: {}".format(queue, str(e)))
                 length = 0
@@ -142,8 +158,7 @@ class QueueLengthMonitoringThread(threading.Thread):
 
         counts = {queue: 0 for queue in self.queue_list}
         try:
-            client = self.celery_app.connection().channel().client
-            unacked = client.hgetall("unacked")
+            unacked = self._redis.hgetall("unacked")
         except Exception as e:
             logging.warning("Could not read unacked hash, setting inflight to zero. Error: {}".format(str(e)))
             unacked = {}

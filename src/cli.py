@@ -22,6 +22,20 @@ from src.exporter import CeleryMetricsExporter
     help="The queues to track",
 )
 @click.option(
+    "--visibility-timeout",
+    type=int,
+    default=21600,
+    show_default=True,
+    help=(
+        "Broker visibility timeout (seconds) for this exporter's own connection. "
+        "Must be at least as long as the longest task any worker on this broker runs: "
+        "the exporter consumes the event queue, and a consuming kombu channel restores "
+        "ANY unacknowledged message older than its own visibility timeout, across every "
+        "queue on the broker. Too low and the exporter requeues other workers' running "
+        "tasks."
+    ),
+)
+@click.option(
     "-r",
     "--refresh",
     type=int,
@@ -31,14 +45,17 @@ from src.exporter import CeleryMetricsExporter
 )
 
 
-def cli(broker_url: str, port: int, queue_names: List[str], refresh: int):
+def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibility_timeout: int):
     ctx = click.get_current_context()
     params = ctx.params
     broker_url = params["broker_url"]
     port = params["port"]
     queue_names = params["queue_names"]
     metrics_refresh = params["refresh"]
-    exporter = CeleryMetricsExporter(broker_url, queue_names, port, metrics_refresh)
+    visibility_timeout = params["visibility_timeout"]
+    exporter = CeleryMetricsExporter(
+        broker_url, queue_names, port, metrics_refresh, visibility_timeout
+    )
     exporter.run()
 
 
