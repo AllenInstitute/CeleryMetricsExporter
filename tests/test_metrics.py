@@ -15,13 +15,12 @@ class _FakeClient:
     monitoring process ends up requeueing another worker's running task.
     """
 
-    def __init__(self, unacked, lengths=None):
-        self._unacked = unacked
+    def __init__(self, unacked, lengths=None, other_hashes=None):
+        self._hashes = {"unacked": unacked, **(other_hashes or {})}
         self._lengths = lengths or {}
 
     def hgetall(self, key):
-        assert key == "unacked"
-        return self._unacked
+        return self._hashes.get(key, {})
 
     def llen(self, queue):
         return self._lengths.get(queue, 0)
@@ -73,6 +72,54 @@ def test_measure_inflight_ignores_untracked_and_bad_entries():
     thread.measure_inflight()
 
     assert thread.inflight_metric.labels("workflow")._value.get() == 1
+
+
+def test_measure_inflight_reads_only_the_default_hash_by_default():
+    thread = _make_thread({b"tag1": _unacked_entry("process")}, ["process"])
+    thread._redis = _FakeClient(
+        {b"tag1": _unacked_entry("process")},
+        other_hashes={"process_unacked": {b"tag2": _unacked_entry("process")}},
+    )
+    thread.measure_inflight()
+
+    assert thread.inflight_metric.labels("process")._value.get() == 1
+
+
+def test_measure_inflight_sums_every_configured_unacked_hash():
+    """A pool given its own unacked_key (to use a shorter visibility_timeout) keeps its
+    in-flight tasks in a separate hash; they must still count, or the autoscaler stops
+    its pods mid-task."""
+    thread = _make_thread({b"tag1": _unacked_entry("workflow")}, ["workflow", "process"])
+    thread._redis = _FakeClient(
+        {b"tag1": _unacked_entry("workflow")},
+        other_hashes={
+            "process_unacked": {
+                b"tag2": _unacked_entry("process"),
+                b"tag3": _unacked_entry("process"),
+            }
+        },
+    )
+    thread.unacked_keys = ("unacked", "process_unacked")
+    thread.measure_inflight()
+
+    assert thread.inflight_metric.labels("workflow")._value.get() == 1
+    assert thread.inflight_metric.labels("process")._value.get() == 2
+
+
+def test_cli_accepts_repeated_unacked_keys():
+    from click.testing import CliRunner
+    from unittest import mock
+
+    from src import cli as cli_module
+
+    with mock.patch.object(cli_module, "CeleryMetricsExporter") as exporter:
+        result = CliRunner().invoke(
+            cli_module.cli,
+            ["--broker-url", "redis://x", "-q", "process",
+             "--unacked-key", "unacked", "--unacked-key", "process_unacked"],
+        )
+    assert result.exit_code == 0, result.output
+    assert exporter.call_args.kwargs["unacked_keys"] == ("unacked", "process_unacked")
 
 
 def test_measure_inflight_noop_without_metric():

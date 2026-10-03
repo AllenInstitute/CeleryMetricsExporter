@@ -36,6 +36,18 @@ from src.exporter import CeleryMetricsExporter
     ),
 )
 @click.option(
+    "--unacked-key",
+    "unacked_keys",
+    multiple=True,
+    default=("unacked",),
+    show_default=True,
+    help=(
+        "Broker hash(es) holding unacknowledged (in-flight) messages; repeat for each. "
+        "Workers given their own redis transport unacked_key (e.g. to use a shorter "
+        "visibility_timeout) must be listed here, or their in-flight tasks read as zero."
+    ),
+)
+@click.option(
     "-r",
     "--refresh",
     type=int,
@@ -45,7 +57,7 @@ from src.exporter import CeleryMetricsExporter
 )
 
 
-def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibility_timeout: int):
+def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibility_timeout: int, unacked_keys: List[str]):
     ctx = click.get_current_context()
     params = ctx.params
     broker_url = params["broker_url"]
@@ -54,7 +66,8 @@ def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibi
     metrics_refresh = params["refresh"]
     visibility_timeout = params["visibility_timeout"]
     exporter = CeleryMetricsExporter(
-        broker_url, queue_names, port, metrics_refresh, visibility_timeout
+        broker_url, queue_names, port, metrics_refresh, visibility_timeout,
+        unacked_keys=params["unacked_keys"],
     )
     exporter.run()
 

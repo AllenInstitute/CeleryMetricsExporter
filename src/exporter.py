@@ -2,7 +2,7 @@ import json
 import logging
 import threading
 import time
-from typing import List
+from typing import List, Sequence
 
 import celery
 import redis as redis_lib
@@ -20,12 +20,13 @@ class CeleryMetricsExporter:
     """
     """
 
-    def __init__(self, broker_url: str, 
+    def __init__(self, broker_url: str,
                        queue_names: List[str],
                        port: int=9808,
                        metrics_refresh: int=30,
-                       visibility_timeout: int=21600):
-        
+                       visibility_timeout: int=21600,
+                       unacked_keys: Sequence[str]=("unacked",)):
+
         self.registry = CollectorRegistry(auto_describe=True)
 
         # self.tasks = Counter(
@@ -94,6 +95,7 @@ class CeleryMetricsExporter:
         self.queues = queue_names
         self.port = port
         self.metrics_refresh = metrics_refresh
+        self.unacked_keys = tuple(unacked_keys)
         logging.info("starting")
 
  
@@ -104,7 +106,7 @@ class CeleryMetricsExporter:
         with self.celery_app.connection() as connection:
             app = create_app(connection, self.registry, self.port)
            
-            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, inflight_metric=self.inflight_tasks, metrics_refresh=self.metrics_refresh, broker_url=self.broker_url)
+            q = QueueLengthMonitoringThread(app=self.celery_app, queue_list=self.queues, queue_metric=self.queue_length, inflight_metric=self.inflight_tasks, metrics_refresh=self.metrics_refresh, broker_url=self.broker_url, unacked_keys=self.unacked_keys)
             q.daemon = True
             q.start()
 
@@ -116,7 +118,14 @@ class CeleryMetricsExporter:
 
 class QueueLengthMonitoringThread(threading.Thread):
 
-    def __init__(self, app: celery, queue_list: List[str], queue_metric: str, inflight_metric=None, metrics_refresh: int=30, broker_url: str=None):
+    # kombu's default unacked hash. Workers can be given their own (the redis transport's
+    # unacked_key option), e.g. so one pool can use a shorter visibility_timeout without
+    # restoring other pools' long-running tasks; list every hash in use here, or tasks
+    # in flight on such a pool read as zero and the autoscaler stops its pods mid-task.
+    unacked_keys = ("unacked",)
+
+    def __init__(self, app: celery, queue_list: List[str], queue_metric: str, inflight_metric=None, metrics_refresh: int=30, broker_url: str=None, unacked_keys: Sequence[str]=("unacked",)):
+        self.unacked_keys = tuple(unacked_keys)
         self.queue_metric = queue_metric
         self.inflight_metric = inflight_metric
         self.celery_app = app
@@ -148,22 +157,23 @@ class QueueLengthMonitoringThread(threading.Thread):
     def measure_inflight(self):
         """Count in-flight (received but unacknowledged) tasks per queue.
 
-        The broker's ``unacked`` hash maps each delivery tag to
-        ``[message, exchange, routing_key]``; the routing key is the queue name.
-        We read it once and bucket by queue so a busy pool (queue_length == 0 but
-        a task still running) is still visible to the autoscaler.
+        Each unacked hash maps a delivery tag to ``[message, exchange, routing_key]``;
+        the routing key is the queue name. We read every configured hash once and bucket
+        by queue so a busy pool (queue_length == 0 but a task still running) is still
+        visible to the autoscaler.
         """
         if self.inflight_metric is None:
             return
 
         counts = {queue: 0 for queue in self.queue_list}
-        try:
-            unacked = self._redis.hgetall("unacked")
-        except Exception as e:
-            logging.warning("Could not read unacked hash, setting inflight to zero. Error: {}".format(str(e)))
-            unacked = {}
+        unacked = {}
+        for key in self.unacked_keys:
+            try:
+                unacked.update(self._redis.hgetall(key) or {})
+            except Exception as e:
+                logging.warning("Could not read unacked hash {}, skipping it. Error: {}".format(key, str(e)))
 
-        for _tag, value in (unacked or {}).items():
+        for _tag, value in unacked.items():
             try:
                 message = json.loads(value)
                 routing_key = message[2] if isinstance(message, list) and len(message) >= 3 else None
