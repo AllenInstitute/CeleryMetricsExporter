@@ -165,3 +165,80 @@ def test_exporter_sets_a_visibility_timeout():
     sig = inspect.signature(CeleryMetricsExporter.__init__)
     assert "visibility_timeout" in sig.parameters
     assert sig.parameters["visibility_timeout"].default >= 21600
+
+
+# --- StaleUnackedRestorer: runs against a real redis (REDIS_TEST_URL), skipped without one
+
+import os
+import time
+from unittest import mock
+
+import pytest
+
+REDIS_TEST_URL = os.environ.get("REDIS_TEST_URL", "redis://localhost:6390/15")
+
+
+def _redis_or_skip():
+    import redis
+
+    client = redis.Redis.from_url(REDIS_TEST_URL)
+    try:
+        client.ping()
+    except Exception:
+        pytest.skip(f"no redis at {REDIS_TEST_URL}")
+    client.flushdb()
+    return client
+
+
+def _claim(client, tag, queue, task_id, claimed_at):
+    """Put a message in the unacked hash as kombu does when a worker receives it."""
+    payload = {
+        "body": "", "content-encoding": "utf-8", "content-type": "application/json",
+        "headers": {"id": task_id, "task": "orchestration:upload_to_db"},
+        "properties": {"delivery_tag": tag, "delivery_info": {"exchange": "", "routing_key": queue}},
+    }
+    client.hset("unacked", tag, json.dumps([payload, "", queue]))
+    client.zadd("unacked_index", {tag: claimed_at})
+
+
+def test_restorer_requeues_only_messages_older_than_the_visibility_timeout():
+    from src.exporter import StaleUnackedRestorer
+
+    client = _redis_or_skip()
+    now = time.time()
+    _claim(client, "dead", "orchestration", "task-of-a-dead-pod", now - 1000)
+    _claim(client, "alive", "orchestration", "task-still-running", now - 100)
+
+    restorer = StaleUnackedRestorer(REDIS_TEST_URL, visibility_timeout=900)
+    assert restorer.stale_count() == 1
+    assert restorer.restore() == 1
+
+    queued = [json.loads(m) for m in client.lrange("orchestration", 0, -1)]
+    assert [m["headers"]["id"] for m in queued] == ["task-of-a-dead-pod"]
+    assert client.hkeys("unacked") == [b"alive"]  # the running task stays claimed
+    assert [t for t, _ in client.zrange("unacked_index", 0, -1, withscores=True)] == [b"alive"]
+    assert restorer.restore() == 0  # nothing left to do
+    client.flushdb()
+
+
+def test_restorer_is_a_noop_without_stale_messages():
+    from src.exporter import StaleUnackedRestorer
+
+    client = _redis_or_skip()
+    _claim(client, "alive", "workflow", "running", time.time())
+    assert StaleUnackedRestorer(REDIS_TEST_URL, visibility_timeout=900).restore() == 0
+    assert client.llen("workflow") == 0
+    client.flushdb()
+
+
+def test_cli_restore_flag_defaults_off():
+    from click.testing import CliRunner
+
+    from src import cli as cli_module
+
+    with mock.patch.object(cli_module, "CeleryMetricsExporter") as exporter:
+        result = CliRunner().invoke(cli_module.cli, ["--broker-url", "redis://x", "-q", "orchestration"])
+        assert result.exit_code == 0, result.output
+        assert exporter.call_args.kwargs["restore_stale_unacked"] is False
+        CliRunner().invoke(cli_module.cli, ["--broker-url", "redis://x", "-q", "orchestration", "--restore-stale-unacked"])
+        assert exporter.call_args.kwargs["restore_stale_unacked"] is True
