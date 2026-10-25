@@ -27,12 +27,35 @@ from src.exporter import CeleryMetricsExporter
     default=21600,
     show_default=True,
     help=(
-        "Broker visibility timeout (seconds) for this exporter's own connection. "
-        "Must be at least as long as the longest task any worker on this broker runs: "
-        "the exporter consumes the event queue, and a consuming kombu channel restores "
-        "ANY unacknowledged message older than its own visibility timeout, across every "
-        "queue on the broker. Too low and the exporter requeues other workers' running "
-        "tasks."
+        "Broker visibility timeout (seconds) for this exporter's connections. With "
+        "--restore-stale-unacked, messages unacknowledged for longer than this are "
+        "requeued, so it must be at least as long as the longest task any worker on this "
+        "broker runs; too low and the exporter requeues other workers' running tasks. "
+        "(The event receiver alone never restores anything: on redis it reads events by "
+        "pub/sub, not by consuming a queue.)"
+    ),
+)
+@click.option(
+    "--unacked-key",
+    "unacked_keys",
+    multiple=True,
+    default=("unacked",),
+    show_default=True,
+    help=(
+        "Broker hash(es) holding unacknowledged (in-flight) messages; repeat for each. "
+        "Workers given their own redis transport unacked_key (e.g. to use a shorter "
+        "visibility_timeout) must be listed here, or their in-flight tasks read as zero."
+    ),
+)
+@click.option(
+    "--restore-stale-unacked/--no-restore-stale-unacked",
+    default=False,
+    show_default=True,
+    help=(
+        "Requeue messages left in the default unacked hash for longer than "
+        "--visibility-timeout, i.e. claimed by a worker that died. kombu does this only "
+        "from a worker consuming a queue, so with every worker scaled to zero nothing "
+        "else would. --visibility-timeout must then exceed the longest task."
     ),
 )
 @click.option(
@@ -45,7 +68,7 @@ from src.exporter import CeleryMetricsExporter
 )
 
 
-def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibility_timeout: int):
+def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibility_timeout: int, unacked_keys: List[str], restore_stale_unacked: bool):
     ctx = click.get_current_context()
     params = ctx.params
     broker_url = params["broker_url"]
@@ -54,7 +77,9 @@ def cli(broker_url: str, port: int, queue_names: List[str], refresh: int, visibi
     metrics_refresh = params["refresh"]
     visibility_timeout = params["visibility_timeout"]
     exporter = CeleryMetricsExporter(
-        broker_url, queue_names, port, metrics_refresh, visibility_timeout
+        broker_url, queue_names, port, metrics_refresh, visibility_timeout,
+        unacked_keys=params["unacked_keys"],
+        restore_stale_unacked=params["restore_stale_unacked"],
     )
     exporter.run()
 
